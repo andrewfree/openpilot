@@ -139,11 +139,7 @@ class CarController(object):
 
     # Send steering command.
     idx = frame % 4
-<<<<<<< HEAD
-    can_sends.append(hondacan.create_steering_control(self.packer, apply_steer, enabled, CS.CP.carFingerprint, idx))
-=======
     can_sends.append(hondacan.create_steering_control(self.packer, apply_steer, lkas_active, CS.CP.carFingerprint, idx))
->>>>>>> commaai/devel
 
     # Send dashboard UI commands.
     if (frame % 10) == 0:

@@ -86,24 +86,24 @@ from selfdrive.loggerd.config import ROOT
 
 # comment out anything you don't want to run
 managed_processes = {
-  "uploader": "selfdrive.loggerd.uploader",
+  #"uploader": "selfdrive.loggerd.uploader",
   "controlsd": "selfdrive.controls.controlsd",
-  "radard": "selfdrive.controls.radard",
-  "ubloxd": "selfdrive.locationd.ubloxd",
-  "locationd_dummy": "selfdrive.locationd.locationd_dummy",
-  "loggerd": ("selfdrive/loggerd", ["./loggerd"]),
+  #"radard": "selfdrive.controls.radard",
+  #"ubloxd": "selfdrive.locationd.ubloxd",
+  #"locationd_dummy": "selfdrive.locationd.locationd_dummy",
+  #"loggerd": ("selfdrive/loggerd", ["./loggerd"]),
   "logmessaged": "selfdrive.logmessaged",
-  "tombstoned": "selfdrive.tombstoned",
-  "logcatd": ("selfdrive/logcatd", ["./logcatd"]),
-  "proclogd": ("selfdrive/proclogd", ["./proclogd"]),
+  #"tombstoned": "selfdrive.tombstoned",
+  #"logcatd": ("selfdrive/logcatd", ["./logcatd"]),
+  #"proclogd": ("selfdrive/proclogd", ["./proclogd"]),
   "boardd": ("selfdrive/boardd", ["./boardd"]),   # not used directly
-  "pandad": "selfdrive.pandad",
-  "ui": ("selfdrive/ui", ["./ui"]),
-  "visiond": ("selfdrive/visiond", ["./visiond"]),
-  "sensord": ("selfdrive/sensord", ["./sensord"]),
-  "gpsd": ("selfdrive/sensord", ["./gpsd"]),
-  "orbd": ("selfdrive/orbd", ["./orbd_wrapper.sh"]),
-  "updated": "selfdrive.updated",
+  #"pandad": "selfdrive.pandad",
+  #"ui": ("selfdrive/ui", ["./ui"]),
+  #"visiond": ("selfdrive/visiond", ["./visiond"]),
+  #"sensord": ("selfdrive/sensord", ["./sensord"]),
+  #"gpsd": ("selfdrive/sensord", ["./gpsd"]),
+  #"orbd": ("selfdrive/orbd", ["./orbd_wrapper.sh"]),
+  #"updated": "selfdrive.updated",
   #"gpsplanner": "selfdrive.controls.gps_plannerd",
 }
 
@@ -709,7 +709,7 @@ def main():
       cwd=os.path.join(BASEDIR, "selfdrive", "ui", "spinner"),
       close_fds=True)
   try:
-    manager_update()
+    #manager_update()
     manager_init()
     manager_prepare()
   finally:
