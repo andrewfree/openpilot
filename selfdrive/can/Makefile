@@ -21,10 +21,11 @@ ifeq ($(UNAME_S),Darwin)
 	ZMQ_LIBS = -L/usr/local/lib -lzmq
 else ifeq ($(OPTEST),1)
 	ZMQ_LIBS = -lzmq
+else ifeq ($(UNAME_M),armv7l)
+	ZMQ_LIBS = -L/usr/local/lib -lzmq
 else ifeq ($(UNAME_M),x86_64)
 	EXTERNAL := ../../external
 	ZMQ_FLAGS = -I$(EXTERNAL)/zmq/include
-	ZMQ_LIBS = -L$(EXTERNAL)/zmq/lib -l:libzmq.a
 else ifeq ($(UNAME_M),aarch64)
 	ZMQ_FLAGS = -I$(PHONELIBS)/zmq/aarch64/include
 	ZMQ_LIBS = -L$(PHONELIBS)/zmq/aarch64/lib -l:libzmq.a

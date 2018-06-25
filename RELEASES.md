@@ -1,11 +1,8 @@
-<<<<<<< HEAD
-=======
 Version 0.4.7.1 (2018-06-18)
 ==========================
  * Fix Acura ILX steer faults
  * Fix bug in mock car
 
->>>>>>> commaai/devel
 Version 0.4.7 (2018-06-15)
 ==========================
  * New model!
