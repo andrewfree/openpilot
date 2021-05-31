@@ -1,40 +1,27 @@
 """Install exception handler for process crash."""
-import os
-import sys
-from selfdrive.version import version, dirty
-
 from selfdrive.swaglog import cloudlog
+from selfdrive.version import version
 
-if os.getenv("NOLOG") or os.getenv("NOCRASH"):
-  def capture_exception(*exc_info):
-    pass
-  def bind_user(**kwargs):
-    pass
-  def bind_extra(**kwargs):
-    pass
-  def install():
-    pass
-else:
-  from raven import Client
-  from raven.transport.http import HTTPTransport
-  client = Client('https://1994756b5e6f41cf939a4c65de45f4f2:cefebaf3a8aa40d182609785f7189bd7@app.getsentry.com/77924',
-                  install_sys_hook=False, transport=HTTPTransport, release=version, tags={'dirty': dirty})
+import sentry_sdk
+from sentry_sdk.integrations.threading import ThreadingIntegration
 
-  def capture_exception(*args, **kwargs):
-    client.captureException(*args, **kwargs)
-    cloudlog.error("crash", exc_info=kwargs.get('exc_info', 1))
+def capture_exception(*args, **kwargs):
+  cloudlog.error("crash", exc_info=kwargs.get('exc_info', 1))
 
-  def bind_user(**kwargs):
-    client.user_context(kwargs)
+  try:
+    sentry_sdk.capture_exception(*args, **kwargs)
+    sentry_sdk.flush()  # https://github.com/getsentry/sentry-python/issues/291
+  except Exception:
+    cloudlog.exception("sentry exception")
 
-  def bind_extra(**kwargs):
-    client.extra_context(kwargs)
+def bind_user(**kwargs):
+  sentry_sdk.set_user(kwargs)
 
-  def install():
-    # installs a sys.excepthook
-    __excepthook__ = sys.excepthook
-    def handle_exception(*exc_info):
-      if exc_info[0] not in (KeyboardInterrupt, SystemExit):
-        capture_exception(exc_info=exc_info)
-      __excepthook__(*exc_info)
-    sys.excepthook = handle_exception
+def bind_extra(**kwargs):
+  for k, v in kwargs.items():
+    sentry_sdk.set_tag(k, v)
+
+def init():
+  sentry_sdk.init("https://a8dc76b5bfb34908a601d67e2aa8bcf9@o33823.ingest.sentry.io/77924",
+                  default_integrations=False, integrations=[ThreadingIntegration(propagate_hub=True)],
+                  release=version)

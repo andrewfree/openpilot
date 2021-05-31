@@ -1,36 +1,26 @@
-import struct
-
-import common.numpy_fast as np
 from selfdrive.config import Conversions as CV
-from selfdrive.car.honda.values import CAR
+from selfdrive.car.honda.values import HONDA_BOSCH
 
-# *** Honda specific ***
-def can_cksum(mm):
-  s = 0
-  for c in mm:
-    c = ord(c)
-    s += (c>>4)
-    s += c & 0xF
-  s = 8-s
-  s %= 0x10
-  return s
+# CAN bus layout with relay
+# 0 = ACC-CAN - radar side
+# 1 = F-CAN B - powertrain
+# 2 = ACC-CAN - camera side
+# 3 = F-CAN A - OBDII port
+
+def get_pt_bus(car_fingerprint):
+  return 1 if car_fingerprint in HONDA_BOSCH else 0
 
 
-def fix(msg, addr):
-  msg2 = msg[0:-1] + chr(ord(msg[-1]) | can_cksum(struct.pack("I", addr)+msg))
-  return msg2
+def get_lkas_cmd_bus(car_fingerprint, radar_disabled=False):
+  if radar_disabled:
+    # when radar is disabled, steering commands are sent directly to powertrain bus
+    return get_pt_bus(car_fingerprint)
+  # normally steering commands are sent to radar, which forwards them to powertrain bus
+  return 0
 
 
-def make_can_msg(addr, dat, idx, alt):
-  if idx is not None:
-    dat += chr(idx << 4)
-    dat = fix(dat, addr)
-  return [addr, 0, dat, alt]
-
-
-def create_brake_command(packer, apply_brake, pcm_override, pcm_cancel_cmd, chime, fcw, idx):
-  """Creates a CAN message for the Honda DBC BRAKE_COMMAND."""
-  pump_on = apply_brake > 0
+def create_brake_command(packer, apply_brake, pump_on, pcm_override, pcm_cancel_cmd, fcw, idx, car_fingerprint, stock_brake):
+  # TODO: do we loose pressure if we keep pump off for long?
   brakelights = apply_brake > 0
   brake_rq = apply_brake > 0
   pcm_fault_cmd = False
@@ -42,115 +32,131 @@ def create_brake_command(packer, apply_brake, pcm_override, pcm_cancel_cmd, chim
     "CRUISE_FAULT_CMD": pcm_fault_cmd,
     "CRUISE_CANCEL_CMD": pcm_cancel_cmd,
     "COMPUTER_BRAKE_REQUEST": brake_rq,
-    "SET_ME_0X80": 0x80,
+    "SET_ME_1": 1,
     "BRAKE_LIGHTS": brakelights,
-    "CHIME": chime,
-    "FCW": fcw << 1,  # TODO: Why are there two bits for fcw? According to dbc file the first bit should also work
+    "CHIME": stock_brake["CHIME"] if fcw else 0,  # send the chime for stock fcw
+    "FCW": fcw << 1,  # TODO: Why are there two bits for fcw?
+    "AEB_REQ_1": 0,
+    "AEB_REQ_2": 0,
+    "AEB_STATUS": 0,
   }
-  return packer.make_can_msg("BRAKE_COMMAND", 0, values, idx)
+  bus = get_pt_bus(car_fingerprint)
+  return packer.make_can_msg("BRAKE_COMMAND", bus, values, idx)
 
 
-def create_gas_command(packer, gas_amount, idx):
-  """Creates a CAN message for the Honda DBC GAS_COMMAND."""
-  enable = gas_amount > 0.001
+def create_acc_commands(packer, enabled, accel, gas, idx, stopping, starting, car_fingerprint):
+  commands = []
+  bus = get_pt_bus(car_fingerprint)
 
-  values = {"ENABLE": enable}
+  control_on = 5 if enabled else 0
+  # no gas = -30000
+  gas_command = gas if enabled and gas > 0 else -30000
+  accel_command = accel if enabled else 0
+  braking = 1 if enabled and accel < 0 else 0
+  standstill = 1 if enabled and stopping else 0
+  standstill_release = 1 if enabled and starting else 0
 
-  if enable:
-    values["GAS_COMMAND"] = gas_amount * 255.
-    values["GAS_COMMAND2"] = gas_amount * 255.
+  acc_control_values = {
+    # setting CONTROL_ON causes car to set POWERTRAIN_DATA->ACC_STATUS = 1
+    "CONTROL_ON": control_on,
+    "GAS_COMMAND": gas_command, # used for gas
+    "ACCEL_COMMAND": accel_command, # used for brakes
+    "BRAKE_LIGHTS": braking,
+    "BRAKE_REQUEST": braking,
+    "STANDSTILL": standstill,
+    "STANDSTILL_RELEASE": standstill_release,
+  }
+  commands.append(packer.make_can_msg("ACC_CONTROL", bus, acc_control_values, idx))
 
-  return packer.make_can_msg("GAS_COMMAND", 0, values, idx)
+  acc_control_on_values = {
+    "SET_TO_3": 0x03,
+    "CONTROL_ON": enabled,
+    "SET_TO_FF": 0xff,
+    "SET_TO_75": 0x75,
+    "SET_TO_30": 0x30,
+  }
+  commands.append(packer.make_can_msg("ACC_CONTROL_ON", bus, acc_control_on_values, idx))
 
+  return commands
 
-def create_steering_control(packer, apply_steer, lkas_active, car_fingerprint, idx):
-  """Creates a CAN message for the Honda DBC STEERING_CONTROL."""
+def create_steering_control(packer, apply_steer, lkas_active, car_fingerprint, idx, radar_disabled):
   values = {
     "STEER_TORQUE": apply_steer if lkas_active else 0,
     "STEER_TORQUE_REQUEST": lkas_active,
   }
-  # Set bus 2 for accord and new crv.
-  bus = 2 if car_fingerprint in (CAR.CRV_5G, CAR.ACCORD, CAR.CIVIC_HATCH) else 0
+  bus = get_lkas_cmd_bus(car_fingerprint, radar_disabled)
   return packer.make_can_msg("STEERING_CONTROL", bus, values, idx)
 
 
-def create_ui_commands(packer, pcm_speed, hud, car_fingerprint, idx):
-  """Creates an iterable of CAN messages for the UIs."""
-  commands = []
-  bus = 0
+def create_bosch_supplemental_1(packer, car_fingerprint, idx):
+  # non-active params
+  values = {
+    "SET_ME_X04": 0x04,
+    "SET_ME_X80": 0x80,
+    "SET_ME_X10": 0x10,
+  }
+  bus = get_lkas_cmd_bus(car_fingerprint)
+  return packer.make_can_msg("BOSCH_SUPPLEMENTAL_1", bus, values, idx)
 
-  # Bosch sends commands to bus 2.
-  if car_fingerprint in (CAR.CRV_5G, CAR.ACCORD, CAR.CIVIC_HATCH):
-    bus = 2
-  else:
-    acc_hud_values = {
-      'PCM_SPEED': pcm_speed * CV.MS_TO_KPH,
-      'PCM_GAS': hud.pcm_accel,
-      'CRUISE_SPEED': hud.v_cruise,
-      'ENABLE_MINI_CAR': hud.mini_car,
-      'HUD_LEAD': hud.car,
-      'SET_ME_X03': 0x03,
-      'SET_ME_X03_2': 0x03,
-      'SET_ME_X01': 0x01,
-    }
-    commands.append(packer.make_can_msg("ACC_HUD", 0, acc_hud_values, idx))
+
+def create_ui_commands(packer, pcm_speed, hud, car_fingerprint, is_metric, idx, openpilot_longitudinal_control, stock_hud):
+  commands = []
+  bus_pt = get_pt_bus(car_fingerprint)
+  radar_disabled = car_fingerprint in HONDA_BOSCH and openpilot_longitudinal_control
+  bus_lkas = get_lkas_cmd_bus(car_fingerprint, radar_disabled)
+
+  if openpilot_longitudinal_control:
+    if car_fingerprint in HONDA_BOSCH:
+      acc_hud_values = {
+        'CRUISE_SPEED': hud.v_cruise,
+        'ENABLE_MINI_CAR': 1,
+        'SET_TO_1': 1,
+        'HUD_LEAD': hud.car,
+        'HUD_DISTANCE': 3,
+        'ACC_ON': hud.car != 0,
+        'SET_TO_X1': 1,
+        'IMPERIAL_UNIT': int(not is_metric),
+      }
+    else:
+      acc_hud_values = {
+        'PCM_SPEED': pcm_speed * CV.MS_TO_KPH,
+        'PCM_GAS': hud.pcm_accel,
+        'CRUISE_SPEED': hud.v_cruise,
+        'ENABLE_MINI_CAR': 1,
+        'HUD_LEAD': hud.car,
+        'HUD_DISTANCE': 3,    # max distance setting on display
+        'IMPERIAL_UNIT': int(not is_metric),
+        'SET_ME_X01_2': 1,
+        'SET_ME_X01': 1,
+        "FCM_OFF": stock_hud["FCM_OFF"],
+        "FCM_OFF_2": stock_hud["FCM_OFF_2"],
+        "FCM_PROBLEM": stock_hud["FCM_PROBLEM"],
+        "ICONS": stock_hud["ICONS"],
+      }
+    commands.append(packer.make_can_msg("ACC_HUD", bus_pt, acc_hud_values, idx))
 
   lkas_hud_values = {
     'SET_ME_X41': 0x41,
     'SET_ME_X48': 0x48,
     'STEERING_REQUIRED': hud.steer_required,
     'SOLID_LANES': hud.lanes,
-    'BEEP': hud.beep,
+    'BEEP': 0,
   }
-  commands.append(packer.make_can_msg('LKAS_HUD', bus, lkas_hud_values, idx))
+  commands.append(packer.make_can_msg('LKAS_HUD', bus_lkas, lkas_hud_values, idx))
 
-  if car_fingerprint in (CAR.CIVIC, CAR.ODYSSEY):
-    commands.append(packer.make_can_msg('HIGHBEAM_CONTROL', 0, {'HIGHBEAMS_ON': False}, idx))
-
+  if radar_disabled and car_fingerprint in HONDA_BOSCH:
     radar_hud_values = {
-      'ACC_ALERTS': hud.acc_alert,
-      'LEAD_SPEED': 0x1fe,  # What are these magic values
-      'LEAD_STATE': 0x7,
-      'LEAD_DISTANCE': 0x1e,
+      'SET_TO_1' : 0x01,
     }
-    commands.append(packer.make_can_msg('RADAR_HUD', 0, radar_hud_values, idx))
+    commands.append(packer.make_can_msg('RADAR_HUD', bus_pt, radar_hud_values, idx))
+
   return commands
 
 
-def create_radar_commands(v_ego, car_fingerprint, idx):
-  """Creates an iterable of CAN messages for the radar system."""
-  commands = []
-  v_ego_kph = np.clip(int(round(v_ego * CV.MS_TO_KPH)), 0, 255)
-  speed = struct.pack('!B', v_ego_kph)
-
-  msg_0x300 = ("\xf9" + speed + "\x8a\xd0" +
-               ("\x20" if idx == 0 or idx == 3 else "\x00") +
-               "\x00\x00")
-
-  if car_fingerprint == CAR.CIVIC:
-    msg_0x301 = "\x02\x38\x44\x32\x4f\x00\x00"
-    commands.append(make_can_msg(0x300, msg_0x300, idx + 8, 1))  # add 8 on idx.
-  else:
-    if car_fingerprint == CAR.CRV:
-      msg_0x301 = "\x00\x00\x50\x02\x51\x00\x00"
-    elif car_fingerprint == CAR.ACURA_RDX:
-      msg_0x301 = "\x0f\x57\x4f\x02\x5a\x00\x00"
-    elif car_fingerprint == CAR.ODYSSEY:
-      msg_0x301 = "\x00\x00\x56\x02\x55\x00\x00"
-    elif car_fingerprint == CAR.ACURA_ILX:
-      msg_0x301 = "\x0f\x18\x51\x02\x5a\x00\x00"
-    elif car_fingerprint == CAR.PILOT:
-      msg_0x301 = "\x00\x00\x56\x02\x58\x00\x00"
-    elif car_fingerprint == CAR.RIDGELINE:
-      msg_0x301 = "\x00\x00\x56\x02\x57\x00\x00"
-    commands.append(make_can_msg(0x300, msg_0x300, idx, 1))
-
-  commands.append(make_can_msg(0x301, msg_0x301, idx, 1))
-  return commands
-
-def spam_buttons_command(packer, button_val, idx):
+def spam_buttons_command(packer, button_val, idx, car_fingerprint):
   values = {
     'CRUISE_BUTTONS': button_val,
     'CRUISE_SETTING': 0,
   }
-  return packer.make_can_msg("SCM_BUTTONS", 0, values, idx)
+  bus = get_pt_bus(car_fingerprint)
+  return packer.make_can_msg("SCM_BUTTONS", bus, values, idx)
